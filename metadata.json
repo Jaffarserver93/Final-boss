@@ -1,0 +1,8 @@
+{
+  "name": "AFK Dashboard Bot",
+  "description": "An automated AFK browser tracking utility keeping web dashboards active with live Puppeteer viewport previews, customizable action loops, and real-time telemetry.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
