@@ -220,11 +220,20 @@ fi
 # This avoids extraction tools errors (missing unzip/tar.exe) and is the standard way to run Puppeteer on PRoot/ARM-based platforms (like Termux/Android/Raspberry Pi).
 export PUPPETEER_SKIP_DOWNLOAD=true
 
+# Try to automatically export system native esbuild binary path to correct the page-alignment Bus Error (core dumped) in Node/Vite under PRoot environments
+if [ -z "$ESBUILD_BINARY_PATH" ]; then
+  if [ -f "/usr/bin/esbuild" ]; then
+    export ESBUILD_BINARY_PATH="/usr/bin/esbuild"
+  elif [ -f "/usr/local/bin/esbuild" ]; then
+    export ESBUILD_BINARY_PATH="/usr/local/bin/esbuild"
+  fi
+fi
+
 echo ""
 echo -e "${BOLD_YELLOW}💡 PRoot/ARM64 Optimization Activated:${RESET}"
 echo -e "   We are skipping the default x86_64 Chrome download to prevent extraction and execution errors."
-echo -e "   Before running the bot, make sure to install native ARM64 Chromium on your system:"
-echo -e "   👉 ${CYAN}apt update && apt install -y chromium-browser chromium unzip${RESET}"
+echo -e "   Before running the bot, make sure to install native ARM64 Chromium and Esbuild compiler on your system:"
+echo -e "   👉 ${CYAN}apt update && apt install -y chromium-browser chromium unzip esbuild${RESET}"
 echo ""
 
 # Robust container execution installation with root bypass (prevents EACCES error)
