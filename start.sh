@@ -1,290 +1,444 @@
 #!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AFK Dashboard Bot — PRoot Ubuntu Launch Script
+#  Deep-compatible with: Termux PRoot-Distro Ubuntu, Debian ARM64/x86_64,
+#  standard Linux VPS, Docker containers, and WSL2.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Elegant ANSI Style Colors
-CYAN='\033[0;36m'
-BOLD_CYAN='\033[1;36m'
-GREEN='\033[0;32m'
-BOLD_GREEN='\033[1;32m'
-YELLOW='\033[0;33m'
-BOLD_YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BOLD_RED='\033[1;31m'
-MAGENTA='\033[0;35m'
-BOLD_MAGENTA='\033[1;35m'
-RESET='\033[0m'
+set -euo pipefail
 
-# Clear terminal screen
-clear
+# ── Colours ──────────────────────────────────────────────────────────────────
+C='\033[0;36m'   BC='\033[1;36m'   G='\033[0;32m'   BG='\033[1;32m'
+Y='\033[0;33m'   BY='\033[1;33m'   R='\033[0;31m'   BR='\033[1;31m'
+M='\033[0;35m'   BM='\033[1;35m'   W='\033[1;37m'   RST='\033[0m'
 
-# Display Beautiful ASCII Banner
-echo -e "${BOLD_CYAN}===============================================================${RESET}"
-echo -e "${BOLD_CYAN}        ___   _______ _  __   ___   ___ _____                    ${RESET}"
-echo -e "${BOLD_CYAN}       / _ | / __/ _ / |/ /  / _ ) / _ /_  __/                    ${RESET}"
-echo -e "${BOLD_CYAN}      / __ |/ _// , _/    /  / _  |/ _  |/ /                       ${RESET}"
-echo -e "${BOLD_CYAN}     /_/ |_/_/ /_/|_/_/|_/  /____//___//_/                         ${RESET}"
-echo -e "${BOLD_CYAN}                                                                   ${RESET}"
-echo -e "${BOLD_MAGENTA}      [ AFK Dashboard Engine v1.2 - Local Launch Sequence ]        ${RESET}"
-echo -e "${BOLD_CYAN}===============================================================${RESET}"
+# ── Banner ───────────────────────────────────────────────────────────────────
+clear 2>/dev/null || true
+echo -e "${BC}╔═══════════════════════════════════════════════════════════════╗${RST}"
+echo -e "${BC}║        ___   _______ _  __   ___   ___ _____                  ║${RST}"
+echo -e "${BC}║       / _ | / __/ _ / |/ /  / _ ) / _ /_  __/                 ║${RST}"
+echo -e "${BC}║      / __ |/ _// , _/    /  / _  |/ _  |/ /                   ║${RST}"
+echo -e "${BC}║     /_/ |_/_/ /_/|_/_/|_/  /____//___//_/                     ║${RST}"
+echo -e "${BC}║                                                                ║${RST}"
+echo -e "${BM}║      AFK Dashboard Engine v1.2 — PRoot Ubuntu Launcher         ║${RST}"
+echo -e "${BC}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo ""
 
-# Helper verification functions
-check_dependency() {
-  if ! command -v "$1" &> /dev/null; then
-    echo -e "${BOLD_RED}❌ Error: '$1' is not installed or not in your system's PATH.${RESET}"
-    echo -e "${YELLOW}👉 Please install $2 before running this script.${RESET}"
-    exit 1
+# ── Helper utilities ─────────────────────────────────────────────────────────
+step() { echo -e "\n${BC}[STEP $1]${RST} ${W}$2${RST}"; }
+ok()   { echo -e "  ${BG}✔${RST}  $1"; }
+warn() { echo -e "  ${BY}⚠${RST}   $1"; }
+info() { echo -e "  ${C}›${RST}  $1"; }
+err()  { echo -e "  ${BR}✖${RST}  $1" >&2; }
+die()  { err "$1"; exit 1; }
+
+has() { command -v "$1" &>/dev/null; }
+
+# ── Detect architecture ───────────────────────────────────────────────────────
+ARCH=$(uname -m)
+IS_ARM=false
+case "$ARCH" in
+  aarch64|arm64|armv8*) IS_ARM=true ;;
+  armv7*)               IS_ARM=true ;;
+esac
+ok "Architecture: ${ARCH}$(${IS_ARM} && echo ' (ARM — extra fixes active)' || echo '')"
+
+# ── Detect OS / package manager ───────────────────────────────────────────────
+PM=""
+if has apt-get;   then PM="apt"; fi
+if has apt;       then PM="apt"; fi
+if has apk;       then PM="apk"; fi
+if has dnf;       then PM="dnf"; fi
+if has pacman;    then PM="pacman"; fi
+ok "Package manager: ${PM:-none detected}"
+
+# ── Elevate helper (sudo or direct if root) ───────────────────────────────────
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  if has sudo; then SUDO="sudo"; else
+    warn "Not root and sudo not found — some install steps may fail."
   fi
+fi
+
+apt_install() {
+  [ "$PM" = "apt" ] || return 0
+  local pkgs=("$@")
+  local missing=()
+  for p in "${pkgs[@]}"; do
+    dpkg -s "$p" &>/dev/null 2>&1 || missing+=("$p")
+  done
+  if [ ${#missing[@]} -eq 0 ]; then return 0; fi
+  info "Installing system packages: ${missing[*]}"
+  $SUDO apt-get update -qq 2>/dev/null || $SUDO apt-get update || true
+  $SUDO apt-get install -y "${missing[@]}" || \
+    warn "Could not install some packages — continuing anyway."
 }
 
-echo -e "${BOLD_CYAN}[1/4] Verifying local package runtime environments...${RESET}"
-check_dependency "node" "Node.js (v18+ recommended)"
-check_dependency "npm" "Node Package Manager (npm)"
-echo -e "${GREEN}✔ Node.js version $(node -v) detected!${RESET}"
-echo -e "${GREEN}✔ NPM version $(npm -v) detected!${RESET}"
-echo ""
+# ═════════════════════════════════════════════════════════════════════════════
+step "1/7" "Checking write access & directory health"
+# ═════════════════════════════════════════════════════════════════════════════
 
-# Setup environment configuration (.env)
-echo -e "${BOLD_CYAN}[2/4] Initializing secure environment parameters (.env)...${RESET}"
+touch .write_test 2>/dev/null || die "No write permission in $PWD. Run: chmod -R 777 $PWD"
+rm -f .write_test
 
-# Read existing credentials if they are already present
-EXISTING_EMAIL=""
-EXISTING_PASS=""
-EXISTING_PORT=""
-if [ -f .env ]; then
-  EXISTING_EMAIL=$(grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\')
-  EXISTING_PASS=$(grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\')
-  EXISTING_PORT=$(grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\')
-fi
-
-SKIP_PROMPTS="false"
-if [ -n "$EXISTING_EMAIL" ] && [ -n "$EXISTING_PASS" ]; then
-  SKIP_PROMPTS="true"
-  NEW_EMAIL="$EXISTING_EMAIL"
-  NEW_PASS="$EXISTING_PASS"
-  NEW_GEMINI=$(grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\')
-  NEW_PORT="$EXISTING_PORT"
-  if [ -z "$NEW_PORT" ]; then
-    NEW_PORT="3000"
-  fi
-  echo ""
-  echo -e "${GREEN}✔ Existing Vektal Nodes credentials found in .env! Skipping prompts and reusing configuration.${RESET}"
-  echo -e "   - Email: ${CYAN}$NEW_EMAIL${RESET}"
-  echo -e "   - Dashboard Port: ${CYAN}$NEW_PORT${RESET}"
-  echo ""
-fi
-
-if [ "$SKIP_PROMPTS" = "false" ]; then
-  # Double-check .env existence and allow clear resetting
-  if [ -f .env ]; then
-    echo -e "${YELLOW}⚠️  Existing '.env' file detected.${RESET}"
-    read -p "Do you want to reset and overwrite your existing .env settings? (y/N): " OVERWRITE_ENV
-    if [[ "$OVERWRITE_ENV" =~ ^[Yy]$ ]]; then
-      rm -f .env
-    fi
-  fi
-
-  if [ ! -f .env ]; then
-    if [ -f .env.example ]; then
-      cp .env.example .env
-      echo -e "${GREEN}✔ Successfully bootstrapped .env from template.${RESET}"
-    else
-      touch .env
-      echo -e "${GREEN}✔ Created clean .env configuration file.${RESET}"
-    fi
-  fi
-
-  # Request User Inputs with gorgeous prompt formatting
-  echo ""
-  echo -e "${BOLD_YELLOW}💬 Please provide your Vektal Nodes credentials below.${RESET}"
-  echo -e "${YELLOW}These values will be stored locally inside '.env' and never exposed to public repositories.${RESET}"
-  echo ""
-
-  # 1. VEKTAL_EMAIL Input
-  CURRENT_EMAIL=$(grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\')
-  if [ -n "$CURRENT_EMAIL" ]; then
-    read -p "$(echo -e "${BOLD_CYAN}▸ Enter Vektal Nodes Email [Current: $CURRENT_EMAIL]: ${RESET}")" NEW_EMAIL
-    if [ -z "$NEW_EMAIL" ]; then
-      NEW_EMAIL=$CURRENT_EMAIL
-    fi
-  else
-    while [ -z "$NEW_EMAIL" ]; do
-      read -p "$(echo -e "${BOLD_CYAN}▸ Enter Vektal Nodes Email: ${RESET}")" NEW_EMAIL
-      if [ -z "$NEW_EMAIL" ]; then
-        echo -e "${RED}⚠️  Email cannot be empty during initial configuration.${RESET}"
-      fi
-    done
-  fi
-
-  # 2. VEKTAL_PASSWORD Input (Securely hidden)
-  CURRENT_PASS=$(grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\')
-  if [ -n "$CURRENT_PASS" ]; then
-    echo -e "${BOLD_CYAN}▸ Enter Vektal Nodes Password [Current: ********] (Keystrokes hidden): ${RESET}"
-    read -s NEW_PASS
-    if [ -z "$NEW_PASS" ]; then
-      NEW_PASS=$CURRENT_PASS
-    fi
-  else
-    while [ -z "$NEW_PASS" ]; do
-      echo -e "${BOLD_CYAN}▸ Enter Vektal Nodes Password (Keystrokes hidden): ${RESET}"
-      read -s NEW_PASS
-      if [ -z "$NEW_PASS" ]; then
-        echo -e "${RED}⚠️  Password cannot be empty during initial configuration.${RESET}"
-      fi
-    done
-  fi
-
-  # 3. Optional GEMINI_API_KEY
-  CURRENT_GEMINI=$(grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\')
-  if [ -n "$CURRENT_GEMINI" ]; then
-    read -p "$(echo -e "${BOLD_CYAN}▸ Enter Gemini API Key (Optional) [Current exists]: ${RESET}")" NEW_GEMINI
-    if [ -z "$NEW_GEMINI" ]; then
-      NEW_GEMINI=$CURRENT_GEMINI
-    fi
-  else
-    read -p "$(echo -e "${BOLD_CYAN}▸ Enter Gemini API Key (Optional for smart metrics): ${RESET}")" NEW_GEMINI
-  fi
-
-  # 4. Optional PORT configuration
-  CURRENT_PORT=$(grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\')
-  if [ -z "$CURRENT_PORT" ]; then
-    CURRENT_PORT="3000"
-  fi
-  read -p "$(echo -e "${BOLD_CYAN}▸ Enter Dashboard Port [Default/Current: $CURRENT_PORT]: ${RESET}")" NEW_PORT
-  if [ -z "$NEW_PORT" ]; then
-    NEW_PORT=$CURRENT_PORT
-  fi
-
-  # Write updated parameters to .env securely
-  sed -i.bak -e '/^VEKTAL_EMAIL=/d' .env 2>/dev/null || true
-  sed -i.bak -e '/^VEKTAL_PASSWORD=/d' .env 2>/dev/null || true
-  sed -i.bak -e '/^GEMINI_API_KEY=/d' .env 2>/dev/null || true
-  sed -i.bak -e '/^PORT=/d' .env 2>/dev/null || true
-  rm -f .env.bak 2>/dev/null || true
-
-  echo "VEKTAL_EMAIL=\"$NEW_EMAIL\"" >> .env
-  echo "VEKTAL_PASSWORD=\"$NEW_PASS\"" >> .env
-  echo "PORT=\"$NEW_PORT\"" >> .env
-  if [ -n "$NEW_GEMINI" ]; then
-    echo "GEMINI_API_KEY=\"$NEW_GEMINI\"" >> .env
-  fi
-
-  echo ""
-  echo -e "${GREEN}✔ Credentials updated and stored in .env successfully!${RESET}"
-  echo ""
-fi
-
-# Installing Dependencies
-echo -e "${BOLD_CYAN}[3/4] Installing necessary workspace node dependencies...${RESET}"
-echo -e "${YELLOW}Please wait while npm retrieves latest compatible libraries (this may take a moment)...${RESET}"
-echo ""
-
-# Ensure we have correct directory ownership for the current executing user
-# This avoids npm security checks that automatically downgrade privileges in root folders and cause EACCES errors.
-touch .test_write 2>/dev/null
-WRITE_OK=$?
-rm -f .test_write 2>/dev/null
-
-ln -s /start.sh .test_symlink 2>/dev/null
-SYMLINK_OK=$?
-rm -f .test_symlink 2>/dev/null
-
-if [ "$WRITE_OK" -ne 0 ]; then
-  echo -e "${BOLD_RED}❌ Error: You do not have write permissions in this directory ($PWD).${RESET}"
-  echo -e "${YELLOW}Please run: 'chmod -R 777 $PWD' in your PRoot terminal to resolve this ownership block.${RESET}"
-  echo ""
-  exit 1
-fi
-
-if [ "$SYMLINK_OK" -ne 0 ]; then
-  echo -e "${BOLD_YELLOW}⚠️  WARNING: Symlinks are not supported in your current directory!${RESET}"
-  echo -e "${YELLOW}This normally happens if you are running from an Android shared /sdcard storage mount.${RESET}"
-  echo -e "${YELLOW}Android shared storage mounts do NOT support internal execute flags or symlinks.${RESET}"
-  echo -e "${BOLD_CYAN}👉 Solution: Copy the project folder to the internal PRoot directory (e.g., inside /root or /home) and run it from there.${RESET}"
-  echo ""
-  read -p "Do you want to ignore this warning and attempt installation? (y/N): " FORCE_CONT
-  if [[ ! "$FORCE_CONT" =~ ^[Yy]$ ]]; then
-    exit 1
-  fi
-fi
-
-chown -R "$(whoami)" . 2>/dev/null || true
-chmod -R 755 . 2>/dev/null || true
-
-# If executing inside PRoot, as root (UID 0), or unprivileged container platforms
-if [ "$(id -u)" -eq 0 ] || [ "$(whoami)" = "root" ]; then
-  npm config set user 0 2>/dev/null || true
-  npm config set unsafe-perm true 2>/dev/null || true
-fi
-
-# Set Puppeteer environment variables to bypass downloading default x86_64 Chromium binaries.
-# This avoids extraction tools errors (missing unzip/tar.exe) and is the standard way to run Puppeteer on PRoot/ARM-based platforms (like Termux/Android/Raspberry Pi).
-export PUPPETEER_SKIP_DOWNLOAD=true
-
-# Try to automatically export system native esbuild binary path to correct the page-alignment Bus Error (core dumped) in Node/Vite under PRoot environments
-if [ -z "$ESBUILD_BINARY_PATH" ]; then
-  if [ -f "/usr/bin/esbuild" ]; then
-    export ESBUILD_BINARY_PATH="/usr/bin/esbuild"
-  elif [ -f "/usr/local/bin/esbuild" ]; then
-    export ESBUILD_BINARY_PATH="/usr/local/bin/esbuild"
-  fi
-fi
-
-echo ""
-echo -e "${BOLD_YELLOW}💡 PRoot/ARM64 Optimization Activated:${RESET}"
-echo -e "   We are skipping the default x86_64 Chrome download to prevent extraction and execution errors."
-echo -e "   Before running the bot, make sure to install native ARM64 Chromium and Esbuild compiler on your system:"
-echo -e "   👉 ${CYAN}apt update && apt install -y chromium-browser chromium unzip esbuild${RESET}"
-echo ""
-
-# Robust container execution installation with root bypass (prevents EACCES error)
-PUPPETEER_SKIP_DOWNLOAD=true npm install --unsafe-perm=true --legacy-peer-deps || PUPPETEER_SKIP_DOWNLOAD=true npm install --no-audit --no-fund --unsafe-perm=true --legacy-peer-deps || PUPPETEER_SKIP_DOWNLOAD=true npm install --legacy-peer-deps
-
-if [ $? -eq 0 ]; then
-  echo ""
-  echo -e "${GREEN}✔ NPM Package dependencies resolved completely!${RESET}"
+# Symlink test — Android /sdcard does NOT support symlinks (FAT32/exFAT)
+if ! ln -s /dev/null .sym_test 2>/dev/null; then
+  warn "Symlinks NOT supported in this directory."
+  warn "This usually means you're running from /sdcard (Android shared storage)."
+  warn "npm requires symlink support. Copy the project into the PRoot home first:"
+  echo -e "    ${C}cp -r \$(pwd) ~/bot && cd ~/bot${RST}"
+  read -rp "$(echo -e "${BY}Ignore this warning and try anyway? (y/N): ${RST}")" SYM_SKIP
+  [[ "$SYM_SKIP" =~ ^[Yy]$ ]] || exit 1
 else
-  echo ""
-  echo -e "${BOLD_RED}❌ Error: Dependencies installation failed. Please check log traces above.${RESET}"
-  exit 1
+  rm -f .sym_test
+  ok "Write access and symlinks are supported."
 fi
 
+# ═════════════════════════════════════════════════════════════════════════════
+step "2/7" "Installing system-level dependencies"
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Core build tools
+apt_install curl wget ca-certificates gnupg unzip tar xz-utils git build-essential
+
+# ── Node.js ──────────────────────────────────────────────────────────────────
+NODE_MIN_MAJOR=18
+if has node; then
+  NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])" 2>/dev/null || echo "0")
+  if [ "$NODE_MAJOR" -lt "$NODE_MIN_MAJOR" ]; then
+    warn "Node.js v${NODE_MAJOR} is too old (need v${NODE_MIN_MAJOR}+). Installing via NodeSource..."
+    has_new_node=false
+  else
+    ok "Node.js $(node -v) detected."
+    has_new_node=true
+  fi
+else
+  warn "Node.js not found."
+  has_new_node=false
+fi
+
+if ! $has_new_node; then
+  if [ "$PM" = "apt" ]; then
+    # NodeSource setup — works on ARM64 and x86_64
+    info "Setting up NodeSource repository for Node.js 20 LTS..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO bash - 2>/dev/null || \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+    $SUDO apt-get install -y nodejs 2>/dev/null || apt-get install -y nodejs 2>/dev/null || true
+  fi
+
+  # Fallback: NVM (works on any arch, no root needed)
+  if ! has node || [ "$(node -e "console.log(process.versions.node.split('.')[0])" 2>/dev/null)" -lt "$NODE_MIN_MAJOR" ]; then
+    warn "NodeSource install failed or skipped. Trying NVM fallback..."
+    export NVM_DIR="${HOME}/.nvm"
+    if [ ! -d "$NVM_DIR" ]; then
+      curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash 2>/dev/null || true
+    fi
+    # shellcheck disable=SC1091
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" || true
+    if has nvm; then
+      nvm install 20 2>/dev/null && nvm use 20 2>/dev/null && nvm alias default 20 2>/dev/null || true
+    fi
+  fi
+
+  has node || die "Could not install Node.js. Please install manually: https://nodejs.org"
+  ok "Node.js $(node -v) is ready."
+fi
+
+has npm || die "npm not found. It should come with Node.js."
+ok "npm $(npm -v) detected."
+
+# ── Chromium ─────────────────────────────────────────────────────────────────
+CHROMIUM_PATH=""
+for bin in chromium-browser chromium chromium-bsu google-chrome google-chrome-stable; do
+  if has "$bin"; then
+    CHROMIUM_PATH=$(command -v "$bin")
+    ok "Chromium found at: ${CHROMIUM_PATH}"
+    break
+  fi
+done
+
+if [ -z "$CHROMIUM_PATH" ]; then
+  warn "Chromium not found. Installing..."
+  if [ "$PM" = "apt" ]; then
+    # ARM64: 'chromium' is the correct package name on Ubuntu/Debian ARM
+    if $IS_ARM; then
+      $SUDO apt-get install -y chromium 2>/dev/null || \
+      $SUDO apt-get install -y chromium-browser 2>/dev/null || true
+    else
+      $SUDO apt-get install -y chromium-browser 2>/dev/null || \
+      $SUDO apt-get install -y chromium 2>/dev/null || true
+    fi
+  fi
+  for bin in chromium-browser chromium google-chrome; do
+    if has "$bin"; then CHROMIUM_PATH=$(command -v "$bin"); break; fi
+  done
+  if [ -z "$CHROMIUM_PATH" ]; then
+    warn "Chromium install failed. Puppeteer will run in simulated fallback mode."
+    warn "To fix: apt install chromium  (or chromium-browser)"
+  else
+    ok "Chromium installed at: ${CHROMIUM_PATH}"
+  fi
+fi
+
+# ── esbuild (ARM64 Bus Error fix) ─────────────────────────────────────────────
+# The npm-bundled esbuild binary is compiled for x86_64 with 4 KB page alignment.
+# ARM64 Linux kernels use 16 KB pages — executing the x86_64 binary causes
+# "Bus error (core dumped)".  Install the system-native esbuild as the fix.
+ESBUILD_SYS=""
+for p in /usr/bin/esbuild /usr/local/bin/esbuild; do
+  [ -x "$p" ] && ESBUILD_SYS="$p" && break
+done
+
+if $IS_ARM && [ -z "$ESBUILD_SYS" ]; then
+  warn "ARM64: system esbuild not found — installing to prevent Bus Error in Vite..."
+  if [ "$PM" = "apt" ]; then
+    $SUDO apt-get install -y esbuild 2>/dev/null || true
+  fi
+  # If apt esbuild is too old or missing, install via npm globally
+  if ! has esbuild || [ -z "$ESBUILD_SYS" ]; then
+    npm install -g esbuild 2>/dev/null || true
+  fi
+  for p in /usr/bin/esbuild /usr/local/bin/esbuild $(npm root -g 2>/dev/null)/esbuild/bin/esbuild; do
+    [ -x "$p" ] && ESBUILD_SYS="$p" && break
+  done
+fi
+
+if [ -n "$ESBUILD_SYS" ]; then
+  export ESBUILD_BINARY_PATH="$ESBUILD_SYS"
+  ok "esbuild path pinned: ${ESBUILD_SYS}"
+elif $IS_ARM; then
+  warn "No system esbuild found. Vite may crash with Bus Error on ARM64."
+  warn "Fix: apt install esbuild  OR  npm install -g esbuild"
+fi
+
+# ── Other useful tools ────────────────────────────────────────────────────────
+apt_install procps psmisc lsof 2>/dev/null || true
+
+# ═════════════════════════════════════════════════════════════════════════════
+step "3/7" "Configuring environment (.env)"
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Bootstrap from template if .env doesn't exist
+if [ ! -f .env ]; then
+  [ -f .env.example ] && cp .env.example .env || touch .env
+  ok "Created .env from template."
+fi
+
+# Read existing values (safe even if keys are absent)
+_env_get() { grep "^${1}=" .env 2>/dev/null | cut -d'=' -f2- | tr -d '"'"'" | xargs 2>/dev/null || true; }
+_env_set() {
+  local key="$1" val="$2"
+  # Remove existing line then append
+  grep -v "^${key}=" .env > .env.tmp 2>/dev/null && mv .env.tmp .env || true
+  echo "${key}=\"${val}\"" >> .env
+}
+
+EX_EMAIL=$(_env_get VEKTAL_EMAIL)
+EX_PASS=$(_env_get VEKTAL_PASSWORD)
+EX_PORT=$(_env_get PORT)
+EX_GEMINI=$(_env_get GEMINI_API_KEY)
+EX_PORT="${EX_PORT:-3000}"
+
+if [ -n "$EX_EMAIL" ] && [ -n "$EX_PASS" ]; then
+  ok "Existing credentials found — skipping prompts."
+  info "  Email : $EX_EMAIL"
+  info "  Port  : $EX_PORT"
+  NEW_EMAIL="$EX_EMAIL"
+  NEW_PASS="$EX_PASS"
+  NEW_GEMINI="$EX_GEMINI"
+  NEW_PORT="$EX_PORT"
+else
+  echo -e "\n${BY}  Provide your Vektal Nodes credentials (stored only in .env):${RST}"
+
+  # Email
+  while true; do
+    read -rp "$(echo -e "${BC}  ▸ Vektal Email${EX_EMAIL:+ [${EX_EMAIL}]}: ${RST}")" NEW_EMAIL
+    NEW_EMAIL="${NEW_EMAIL:-$EX_EMAIL}"
+    [ -n "$NEW_EMAIL" ] && break
+    err "Email cannot be empty."
+  done
+
+  # Password (hidden)
+  while true; do
+    read -rsp "$(echo -e "${BC}  ▸ Vektal Password${EX_PASS:+ [keep existing]}: ${RST}")" NEW_PASS
+    echo
+    NEW_PASS="${NEW_PASS:-$EX_PASS}"
+    [ -n "$NEW_PASS" ] && break
+    err "Password cannot be empty."
+  done
+
+  # Gemini (optional)
+  read -rp "$(echo -e "${BC}  ▸ Gemini API Key (optional): ${RST}")" NEW_GEMINI
+  NEW_GEMINI="${NEW_GEMINI:-$EX_GEMINI}"
+
+  # Port
+  read -rp "$(echo -e "${BC}  ▸ Dashboard Port [${EX_PORT}]: ${RST}")" NEW_PORT
+  NEW_PORT="${NEW_PORT:-$EX_PORT}"
+
+  # Persist
+  _env_set VEKTAL_EMAIL  "$NEW_EMAIL"
+  _env_set VEKTAL_PASSWORD "$NEW_PASS"
+  _env_set PORT          "$NEW_PORT"
+  [ -n "$NEW_GEMINI" ] && _env_set GEMINI_API_KEY "$NEW_GEMINI"
+  ok "Credentials saved to .env."
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+step "4/7" "Configuring npm for PRoot / root environments"
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Root / PRoot containers report UID 0.  npm by default refuses lifecycle scripts
+# as root (security measure designed for real multi-user systems, not containers).
+if [ "$(id -u)" -eq 0 ]; then
+  npm config set user 0             2>/dev/null || true
+  npm config set unsafe-perm true   2>/dev/null || true
+  ok "npm root-user safe mode enabled (unsafe-perm=true)."
+fi
+
+# ARM64: pin the system-native esbuild for npm scripts too
+if [ -n "${ESBUILD_BINARY_PATH:-}" ]; then
+  npm config set ESBUILD_BINARY_PATH "$ESBUILD_BINARY_PATH" 2>/dev/null || true
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+step "5/7" "Installing Node.js dependencies"
+# ═════════════════════════════════════════════════════════════════════════════
+
+export PUPPETEER_SKIP_DOWNLOAD=true
+export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+info "Running npm install (Puppeteer Chromium download skipped)..."
+
+NPM_INSTALL_OK=false
+for attempt in \
+  "npm install --unsafe-perm=true --legacy-peer-deps" \
+  "npm install --unsafe-perm=true --legacy-peer-deps --no-audit --no-fund" \
+  "npm install --legacy-peer-deps"; do
+  if eval "PUPPETEER_SKIP_DOWNLOAD=true $attempt" 2>&1; then
+    NPM_INSTALL_OK=true
+    break
+  fi
+  warn "Attempt failed, retrying with different flags..."
+done
+
+$NPM_INSTALL_OK || die "npm install failed after all retries. Check the output above."
+ok "All dependencies installed successfully."
+
+# ═════════════════════════════════════════════════════════════════════════════
+step "6/7" "Applying proot-specific runtime patches"
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Re-export ESBUILD_BINARY_PATH (may have been set in step 2 before npm install)
+if [ -n "${ESBUILD_BINARY_PATH:-}" ]; then
+  export ESBUILD_BINARY_PATH
+  ok "ESBUILD_BINARY_PATH exported: $ESBUILD_BINARY_PATH"
+else
+  # Try one more time after npm install (npm may have installed its own)
+  for p in /usr/bin/esbuild /usr/local/bin/esbuild; do
+    [ -x "$p" ] && export ESBUILD_BINARY_PATH="$p" && ok "ESBUILD found post-install: $p" && break
+  done
+fi
+
+# Export Chromium path so Puppeteer can find it without downloading
+if [ -n "$CHROMIUM_PATH" ]; then
+  export PUPPETEER_EXECUTABLE_PATH="$CHROMIUM_PATH"
+  ok "PUPPETEER_EXECUTABLE_PATH set: $CHROMIUM_PATH"
+else
+  warn "No Chromium found — bot will run in SIMULATED mode (no live browser)."
+fi
+
+# Verify port is free
+PORT_IN_USE=false
+if has lsof; then
+  lsof -ti:"${NEW_PORT}" &>/dev/null 2>&1 && PORT_IN_USE=true || true
+elif has ss; then
+  ss -ltn | grep -q ":${NEW_PORT}" && PORT_IN_USE=true || true
+fi
+if $PORT_IN_USE; then
+  warn "Port ${NEW_PORT} is already in use."
+  read -rp "$(echo -e "${BY}  Kill existing process on :${NEW_PORT}? (y/N): ${RST}")" KILL_PORT
+  if [[ "$KILL_PORT" =~ ^[Yy]$ ]]; then
+    if has lsof; then
+      kill "$(lsof -ti:"${NEW_PORT}")" 2>/dev/null || true
+    fi
+    ok "Killed process on port ${NEW_PORT}."
+  fi
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+step "7/7" "Choose launch profile"
+# ═════════════════════════════════════════════════════════════════════════════
+
 echo ""
-# Boot choice Menu
-echo -e "${BOLD_CYAN}[4/4] Setup completed successfully! Select your boot workspace profile:${RESET}"
-echo -e "  ${BOLD_GREEN}1)${RESET} Launch in ${BOLD_GREEN}DEVELOPMENT MODE${RESET} (Realtime direct tsx backend loader)"
-echo -e "  ${BOLD_GREEN}2)${RESET} Launch in ${BOLD_GREEN}PRODUCTION BUILD MODE${RESET} (Clean bundled bundle compilation & start)"
-echo -e "  ${BOLD_GREEN}3)${RESET} Just complete configuration and exit configuration framework"
+echo -e "  ${BG}1)${RST} ${W}DEVELOPMENT MODE${RST}   — Live tsx reload, Vite HMR, fastest iteration"
+echo -e "  ${BG}2)${RST} ${W}PRODUCTION MODE${RST}    — vite build + optimised node server"
+echo -e "  ${BG}3)${RST} ${W}BUILD ONLY${RST}         — Compile frontend to ./dist and exit"
+echo -e "  ${BG}4)${RST} ${W}EXIT${RST}               — Setup complete, exit without launching"
 echo ""
 
-read -p "$(echo -e "${BOLD_CYAN}▸ Select boot profile (1-3): ${RESET}")" CHOICE
+read -rp "$(echo -e "${BC}  ▸ Select profile (1-4) [default: 1]: ${RST}")" CHOICE
+CHOICE="${CHOICE:-1}"
+
+launch_dev() {
+  echo -e "\n${BY}  🚀 Launching DEVELOPMENT server on port ${NEW_PORT}...${RST}"
+  echo -e "  ${C}Open: http://localhost:${NEW_PORT}${RST}\n"
+  PORT="${NEW_PORT}" \
+  PUPPETEER_SKIP_DOWNLOAD=true \
+  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+  ${PUPPETEER_EXECUTABLE_PATH:+PUPPETEER_EXECUTABLE_PATH="$PUPPETEER_EXECUTABLE_PATH"} \
+  ${ESBUILD_BINARY_PATH:+ESBUILD_BINARY_PATH="$ESBUILD_BINARY_PATH"} \
+  npm run dev
+}
+
+launch_prod_build() {
+  echo -e "\n${BY}  ⚙  Building production bundle...${RST}"
+  PUPPETEER_SKIP_DOWNLOAD=true \
+  ${ESBUILD_BINARY_PATH:+ESBUILD_BINARY_PATH="$ESBUILD_BINARY_PATH"} \
+  npm run build
+}
+
+launch_prod_start() {
+  echo -e "\n${BY}  🚀 Starting PRODUCTION server on port ${NEW_PORT}...${RST}"
+  echo -e "  ${C}Open: http://localhost:${NEW_PORT}${RST}\n"
+  PORT="${NEW_PORT}" \
+  NODE_ENV=production \
+  PUPPETEER_SKIP_DOWNLOAD=true \
+  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+  ${PUPPETEER_EXECUTABLE_PATH:+PUPPETEER_EXECUTABLE_PATH="$PUPPETEER_EXECUTABLE_PATH"} \
+  npm start
+}
 
 case $CHOICE in
   1)
-    echo ""
-    echo -e "${BOLD_YELLOW}🚀 Ignition activated! Launching Development Environment on Port ${NEW_PORT}...${RESET}"
-    echo -e "${YELLOW}Open http://localhost:${NEW_PORT} inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
-    echo ""
-    PORT="${NEW_PORT}" npm run dev
+    launch_dev
     ;;
   2)
-    echo ""
-    echo -e "${BOLD_YELLOW}⚙️  Compiling bundle and optimizing node production artifacts...${RESET}"
-    npm run build
-    if [ $? -eq 0 ]; then
-      echo ""
-      echo -e "${BOLD_YELLOW}🚀 Launching Standalone production bundle on secure local socket port ${NEW_PORT}...${RESET}"
-      echo -e "${YELLOW}Open http://localhost:${NEW_PORT} inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
-      echo ""
-      PORT="${NEW_PORT}" npm start
+    if launch_prod_build; then
+      ok "Build succeeded."
+      launch_prod_start
     else
-      echo -e "${BOLD_RED}❌ Build compilation failed. Reverting launcher session.${RESET}"
+      err "Build failed — see errors above."
+      echo -e "\n${BY}  Common fixes on proot/ARM64:${RST}"
+      echo -e "  ${C}› apt install esbuild${RST}  (ARM64 Bus Error fix)"
+      echo -e "  ${C}› apt install chromium${RST}  (Puppeteer target)"
+      echo -e "  ${C}› Make sure you are NOT running from /sdcard${RST}"
+      exit 1
+    fi
+    ;;
+  3)
+    if launch_prod_build; then
+      ok "Build complete! Output is in ./dist"
+      echo -e "  Run the server manually: ${C}PORT=${NEW_PORT} npm start${RST}"
+    else
+      err "Build failed — see errors above."
+      exit 1
     fi
     ;;
   *)
     echo ""
-    echo -e "${BOLD_GREEN}✨ Configuration completed! You can manually start your engine anytime using:${RESET}"
-    echo -e "   - Development: ${CYAN}PORT=${NEW_PORT} npm run dev${RESET}"
-    echo -e "   - Production:  ${CYAN}PORT=${NEW_PORT} npm run build && PORT=${NEW_PORT} npm start${RESET}"
+    ok "Setup complete. You can start the bot manually with:"
+    echo -e "  ${C}Development : PORT=${NEW_PORT} npm run dev${RST}"
+    echo -e "  ${C}Production  : npm run build && PORT=${NEW_PORT} npm start${RST}"
     echo ""
     ;;
 esac
