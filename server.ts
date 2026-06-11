@@ -1445,6 +1445,7 @@ const startBot = async (targetUrl: string, botConfig: typeof config) => {
             '--disable-dev-shm-usage',
             '--disable-gpu',
           ],
+          chromePath: process.env.CHROME_PATH || undefined,
           headless: 'key' as any,
           turnstile: true,
           connect: {
@@ -1464,6 +1465,7 @@ const startBot = async (targetUrl: string, botConfig: typeof config) => {
       addLog('Launching Headless Chromium Browser...', 'info');
       activeBrowser = await puppeteer.launch({
         headless: true,
+        executablePath: process.env.CHROME_PATH || undefined,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
