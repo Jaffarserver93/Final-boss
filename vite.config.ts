@@ -21,9 +21,6 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'framer-motion': path.resolve(__dirname, 'node_modules/framer-motion/dist/es/index.mjs'),
-        'motion/react': path.resolve(__dirname, 'node_modules/motion/dist/es/react.mjs'),
-        'motion': path.resolve(__dirname, 'node_modules/motion/dist/es/index.mjs'),
       },
     },
     server: {
