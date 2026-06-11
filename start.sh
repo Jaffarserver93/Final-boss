@@ -161,11 +161,38 @@ echo ""
 
 # Ensure we have correct directory ownership for the current executing user
 # This avoids npm security checks that automatically downgrade privileges in root folders and cause EACCES errors.
+touch .test_write 2>/dev/null
+WRITE_OK=$?
+rm -f .test_write 2>/dev/null
+
+ln -s /start.sh .test_symlink 2>/dev/null
+SYMLINK_OK=$?
+rm -f .test_symlink 2>/dev/null
+
+if [ "$WRITE_OK" -ne 0 ]; then
+  echo -e "${BOLD_RED}❌ Error: You do not have write permissions in this directory ($PWD).${RESET}"
+  echo -e "${YELLOW}Please run: 'chmod -R 777 $PWD' in your PRoot terminal to resolve this ownership block.${RESET}"
+  echo ""
+  exit 1
+fi
+
+if [ "$SYMLINK_OK" -ne 0 ]; then
+  echo -e "${BOLD_YELLOW}⚠️  WARNING: Symlinks are not supported in your current directory!${RESET}"
+  echo -e "${YELLOW}This normally happens if you are running from an Android shared /sdcard storage mount.${RESET}"
+  echo -e "${YELLOW}Android shared storage mounts do NOT support internal execute flags or symlinks.${RESET}"
+  echo -e "${BOLD_CYAN}👉 Solution: Copy the project folder to the internal PRoot directory (e.g., inside /root or /home) and run it from there.${RESET}"
+  echo ""
+  read -p "Do you want to ignore this warning and attempt installation? (y/N): " FORCE_CONT
+  if [[ ! "$FORCE_CONT" =~ ^[Yy]$ ]]; then
+    exit 1
+  fi
+fi
+
 chown -R "$(whoami)" . 2>/dev/null || true
 chmod -R 755 . 2>/dev/null || true
 
-# If executing as root (UID 0), configure npm to run cleanly without security downgrades
-if [ "$(id -u)" -eq 0 ]; then
+# If executing inside PRoot, as root (UID 0), or unprivileged container platforms
+if [ "$(id -u)" -eq 0 ] || [ "$(whoami)" = "root" ]; then
   npm config set user 0 2>/dev/null || true
   npm config set unsafe-perm true 2>/dev/null || true
 fi
