@@ -197,8 +197,19 @@ if [ "$(id -u)" -eq 0 ] || [ "$(whoami)" = "root" ]; then
   npm config set unsafe-perm true 2>/dev/null || true
 fi
 
+# Set Puppeteer environment variables to bypass downloading default x86_64 Chromium binaries.
+# This avoids extraction tools errors (missing unzip/tar.exe) and is the standard way to run Puppeteer on PRoot/ARM-based platforms (like Termux/Android/Raspberry Pi).
+export PUPPETEER_SKIP_DOWNLOAD=true
+
+echo ""
+echo -e "${BOLD_YELLOW}💡 PRoot/ARM64 Optimization Activated:${RESET}"
+echo -e "   We are skipping the default x86_64 Chrome download to prevent extraction and execution errors."
+echo -e "   Before running the bot, make sure to install native ARM64 Chromium on your system:"
+echo -e "   👉 ${CYAN}apt update && apt install -y chromium-browser chromium unzip${RESET}"
+echo ""
+
 # Robust container execution installation with root bypass (prevents EACCES error)
-npm install --unsafe-perm=true --legacy-peer-deps || npm install --no-audit --no-fund --unsafe-perm=true --legacy-peer-deps || npm install --legacy-peer-deps
+PUPPETEER_SKIP_DOWNLOAD=true npm install --unsafe-perm=true --legacy-peer-deps || PUPPETEER_SKIP_DOWNLOAD=true npm install --no-audit --no-fund --unsafe-perm=true --legacy-peer-deps || PUPPETEER_SKIP_DOWNLOAD=true npm install --legacy-peer-deps
 
 if [ $? -eq 0 ]; then
   echo ""
