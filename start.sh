@@ -49,9 +49,11 @@ echo -e "${BOLD_CYAN}[2/4] Initializing secure environment parameters (.env)...$
 # Read existing credentials if they are already present
 EXISTING_EMAIL=""
 EXISTING_PASS=""
+EXISTING_PORT=""
 if [ -f .env ]; then
   EXISTING_EMAIL=$(grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_EMAIL=" .env | cut -d'=' -f2- | tr -d '"'\')
   EXISTING_PASS=$(grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^VEKTAL_PASSWORD=" .env | cut -d'=' -f2- | tr -d '"'\')
+  EXISTING_PORT=$(grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\')
 fi
 
 SKIP_PROMPTS="false"
@@ -60,9 +62,14 @@ if [ -n "$EXISTING_EMAIL" ] && [ -n "$EXISTING_PASS" ]; then
   NEW_EMAIL="$EXISTING_EMAIL"
   NEW_PASS="$EXISTING_PASS"
   NEW_GEMINI=$(grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^GEMINI_API_KEY=" .env | cut -d'=' -f2- | tr -d '"'\')
+  NEW_PORT="$EXISTING_PORT"
+  if [ -z "$NEW_PORT" ]; then
+    NEW_PORT="3000"
+  fi
   echo ""
   echo -e "${GREEN}✔ Existing Vektal Nodes credentials found in .env! Skipping prompts and reusing configuration.${RESET}"
   echo -e "   - Email: ${CYAN}$NEW_EMAIL${RESET}"
+  echo -e "   - Dashboard Port: ${CYAN}$NEW_PORT${RESET}"
   echo ""
 fi
 
@@ -137,14 +144,26 @@ if [ "$SKIP_PROMPTS" = "false" ]; then
     read -p "$(echo -e "${BOLD_CYAN}▸ Enter Gemini API Key (Optional for smart metrics): ${RESET}")" NEW_GEMINI
   fi
 
+  # 4. Optional PORT configuration
+  CURRENT_PORT=$(grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\' | xargs 2>/dev/null || grep "^PORT=" .env | cut -d'=' -f2- | tr -d '"'\')
+  if [ -z "$CURRENT_PORT" ]; then
+    CURRENT_PORT="3000"
+  fi
+  read -p "$(echo -e "${BOLD_CYAN}▸ Enter Dashboard Port [Default/Current: $CURRENT_PORT]: ${RESET}")" NEW_PORT
+  if [ -z "$NEW_PORT" ]; then
+    NEW_PORT=$CURRENT_PORT
+  fi
+
   # Write updated parameters to .env securely
   sed -i.bak -e '/^VEKTAL_EMAIL=/d' .env 2>/dev/null || true
   sed -i.bak -e '/^VEKTAL_PASSWORD=/d' .env 2>/dev/null || true
   sed -i.bak -e '/^GEMINI_API_KEY=/d' .env 2>/dev/null || true
+  sed -i.bak -e '/^PORT=/d' .env 2>/dev/null || true
   rm -f .env.bak 2>/dev/null || true
 
   echo "VEKTAL_EMAIL=\"$NEW_EMAIL\"" >> .env
   echo "VEKTAL_PASSWORD=\"$NEW_PASS\"" >> .env
+  echo "PORT=\"$NEW_PORT\"" >> .env
   if [ -n "$NEW_GEMINI" ]; then
     echo "GEMINI_API_KEY=\"$NEW_GEMINI\"" >> .env
   fi
@@ -233,10 +252,10 @@ read -p "$(echo -e "${BOLD_CYAN}▸ Select boot profile (1-3): ${RESET}")" CHOIC
 case $CHOICE in
   1)
     echo ""
-    echo -e "${BOLD_YELLOW}🚀 Ignition activated! Launching Development Environment...${RESET}"
-    echo -e "${YELLOW}Open http://localhost:3000 inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
+    echo -e "${BOLD_YELLOW}🚀 Ignition activated! Launching Development Environment on Port ${NEW_PORT}...${RESET}"
+    echo -e "${YELLOW}Open http://localhost:${NEW_PORT} inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
     echo ""
-    npm run dev
+    PORT="${NEW_PORT}" npm run dev
     ;;
   2)
     echo ""
@@ -244,10 +263,10 @@ case $CHOICE in
     npm run build
     if [ $? -eq 0 ]; then
       echo ""
-      echo -e "${BOLD_YELLOW}🚀 Launching Standalone production bundle on secure local socket port 3000...${RESET}"
-      echo -e "${YELLOW}Open http://localhost:3000 inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
+      echo -e "${BOLD_YELLOW}🚀 Launching Standalone production bundle on secure local socket port ${NEW_PORT}...${RESET}"
+      echo -e "${YELLOW}Open http://localhost:${NEW_PORT} inside your web browser to check AFK Telemetry Dashboard Panel.${RESET}"
       echo ""
-      npm start
+      PORT="${NEW_PORT}" npm start
     else
       echo -e "${BOLD_RED}❌ Build compilation failed. Reverting launcher session.${RESET}"
     fi
@@ -255,8 +274,8 @@ case $CHOICE in
   *)
     echo ""
     echo -e "${BOLD_GREEN}✨ Configuration completed! You can manually start your engine anytime using:${RESET}"
-    echo -e "   - Development: ${CYAN}npm run dev${RESET}"
-    echo -e "   - Production:  ${CYAN}npm run build && npm start${RESET}"
+    echo -e "   - Development: ${CYAN}PORT=${NEW_PORT} npm run dev${RESET}"
+    echo -e "   - Production:  ${CYAN}PORT=${NEW_PORT} npm run build && PORT=${NEW_PORT} npm start${RESET}"
     echo ""
     ;;
 esac

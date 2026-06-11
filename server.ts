@@ -11,7 +11,7 @@ import { createServer as createViteServer } from 'vite';
 import AdmZip from 'adm-zip';
 import { BotStatus, TelemetryData, LogMessage } from './src/types.js';
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
