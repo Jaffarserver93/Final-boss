@@ -21,7 +21,8 @@ import {
   Trash2,
   Search,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BotStatus, TelemetryData, LogMessage } from './types';
@@ -111,7 +112,7 @@ export default function App() {
             case 'log':
               setLogs((prev) => {
                 const updated = [...prev, data];
-                return updated.length > 200 ? updated.slice(1) : updated;
+                return updated.length > 50 ? updated.slice(1) : updated;
               });
               break;
 
@@ -328,6 +329,17 @@ export default function App() {
               <span className="font-bold text-white">{telemetry.reloadCount}</span>
             </div>
           </div>
+
+          {/* Download project source ZIP button */}
+          <a 
+            href="/api/download-zip" 
+            download="afk-bot-source.zip"
+            className="px-3 py-1.5 text-xs font-mono font-bold rounded-lg border border-indigo-500/30 bg-indigo-950/40 hover:bg-indigo-900/60 text-indigo-300 hover:text-white transition-all flex items-center gap-1.5 shadow-[0_0_10px_rgba(99,102,241,0.15)] active:scale-95 cursor-pointer"
+            title="Download full project files as ZIP for local execution"
+          >
+            <Download className="h-3.5 w-3.5" />
+            DOWNLOAD ZIP
+          </a>
         </div>
       </header>
 
@@ -907,7 +919,9 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Terminal className="h-4 w-4 text-cyan-400" />
-                  <h2 className="text-sm font-bold text-slate-200">Terminal Telemetry</h2>
+                  <h2 className="text-sm font-bold text-slate-200">
+                    Terminal Telemetry <span className="text-xs text-sky-400 font-normal ml-1">({logs.length}/50)</span>
+                  </h2>
                 </div>
                 <button
                   onClick={() => setLogs([])}

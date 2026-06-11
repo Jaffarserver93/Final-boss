@@ -8,6 +8,7 @@ import puppeteer, { Browser, Page } from 'puppeteer';
 // @ts-ignore
 import { connect } from 'puppeteer-real-browser';
 import { createServer as createViteServer } from 'vite';
+import AdmZip from 'adm-zip';
 import { BotStatus, TelemetryData, LogMessage } from './src/types.js';
 
 const PORT = 3000;
@@ -48,6 +49,29 @@ let config = {
   engine: 'puppeteer-real-browser' as 'puppeteer' | 'puppeteer-real-browser',
 };
 
+// State persistence configuration logic for headless reliability on server restarts & tab closures
+const CONFIG_FILE = path.join(process.cwd(), 'afk-bot-persist.json');
+
+const savePersistedState = (url: string, botConfig: typeof config, started: boolean) => {
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ url, config: botConfig, started }, null, 2));
+  } catch (err: any) {
+    console.error('Failed to write persisted state to disk:', err.message);
+  }
+};
+
+const loadPersistedState = () => {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (err: any) {
+    console.error('Failed to load persisted state from disk:', err.message);
+  }
+  return null;
+};
+
 // Viewport sizes
 const VIEWPORT_WIDTH = 1024;
 const VIEWPORT_HEIGHT = 576;
@@ -61,8 +85,8 @@ const addLog = (text: string, type: 'info' | 'warn' | 'error' | 'browser-log' = 
     text,
   };
   logs.push(log);
-  if (logs.length > 200) {
-    logs.shift(); // keep last 200 logs
+  if (logs.length > 50) {
+    logs.shift(); // keep last 50 logs max as requested to save space and display 50/50 logs
   }
   broadcast({ type: 'log', data: log });
 };
@@ -143,6 +167,10 @@ const stopBot = async (reason: string = 'Bot stopped manually.') => {
   activePage = null;
   uptime = 0;
   lastAction = reason;
+
+  // Persist that the bot is stopped so it doesn't auto-start next boot unless requested
+  savePersistedState(currentUrl, config, false);
+
   addLog(reason, 'info');
   broadcast({ type: 'telemetry', data: getTelemetry() });
 };
@@ -411,6 +439,7 @@ let flowStartTime = 0;
 let lastGetLinkSuccessTime = 0;
 
 let robotClickAttempts = 0;
+let lastRobotClickTime = 0;
 
 let lastShortenerUrl = '';
 let shortenerPageLandedTime = 0;
@@ -525,7 +554,7 @@ const trustedClickElement = async (page: any, elementHandleOrSelector: any, labe
 const findAndTrustedClick = async (page: any, textMatches: string[], label: string): Promise<boolean> => {
   try {
     const selector = await page.evaluate((matches: string[]) => {
-      const els = Array.from(document.querySelectorAll('button, a, div, span, input[type="button"], input[type="submit"], p, h1, h2, h3, h4'));
+      const els = Array.from(document.querySelectorAll('button, a, div, span, input, label, p, h1, h2, h3, h4'));
       const candidates = els.filter(el => {
         const text = (el.textContent || '').trim().toLowerCase();
         const value = ((el as any).value || '').trim().toLowerCase();
@@ -546,16 +575,6 @@ const findAndTrustedClick = async (page: any, textMatches: string[], label: stri
         // Exclude empty inputs/wrappers
         if (!text && !value && !classStr && !idStr) return false;
 
-        // Exclude instruction texts/paragraphs that contain direction descriptions rather than dynamic buttons
-        if (text.includes('click on') || text.includes('scroll down') || text.includes('button below') || text.includes('click below') || text.includes('wait ') || text.includes('seconds')) {
-          return false;
-        }
-
-        // Exclude 'verifying' as a target element if we are looking for 'verify' (prevents clicking during active verification)
-        if (matches.includes('verify') && (text.includes('verifying') || value.includes('verifying') || idStr.includes('verifying') || classStr.includes('verifying'))) {
-          return false;
-        }
-        
         // Verify clickable tags or button class styles
         const isLikelyButtonOrLink = tagName === 'button' || 
                                      tagName === 'a' || 
@@ -565,6 +584,24 @@ const findAndTrustedClick = async (page: any, textMatches: string[], label: stri
                                      idStr.includes('btn') ||
                                      idStr.includes('button') ||
                                      el.getAttribute('role') === 'button';
+
+        // Exclude instruction texts/paragraphs that contain direction descriptions rather than dynamic buttons
+        // Only exclude if the element is NOT an interactive button or link, to prevent skipping valid buttons that say "Click here of continue", etc.
+        if (!isLikelyButtonOrLink) {
+          if (text.includes('click on') || text.includes('scroll down') || text.includes('button below') || text.includes('click below') || text.includes('wait ') || text.includes('seconds')) {
+            return false;
+          }
+        }
+
+        // Exclude 'verifying' as a target element if we are looking for 'verify' (prevents clicking during active verification)
+        // Only exclude if the label text itself is literally "verifying" or "please wait...", never because of verification-related class/id names
+        if (matches.includes('verify')) {
+          const lowerText = text.toLowerCase();
+          const lowerValue = value.toLowerCase();
+          if (lowerText.startsWith('verifying') || lowerValue.startsWith('verifying') || lowerText === 'please wait...' || lowerValue === 'please wait...') {
+            return false;
+          }
+        }
 
         if (!isLikelyButtonOrLink) {
           const style = window.getComputedStyle(el);
@@ -619,6 +656,12 @@ const findAndTrustedClick = async (page: any, textMatches: string[], label: stri
         
         scoreA += Math.min(areaA, 1000) / 10;
         scoreB += Math.min(areaB, 1000) / 10;
+
+        // Text length penalty/bonus (shorter text is highly prioritized to pick actual buttons over large wrapper descriptions)
+        const textLenA = (a.textContent || (a as any).value || '').trim().length;
+        const textLenB = (b.textContent || (b as any).value || '').trim().length;
+        scoreA += Math.max(0, 100 - textLenA);
+        scoreB += Math.max(0, 100 - textLenB);
         
         return scoreB - scoreA; // Descending order
       });
@@ -691,6 +734,7 @@ const handleShortenerPage = async (page: any) => {
       lastShortenerUrl = url;
       shortenerPageLandedTime = Date.now();
       robotClickAttempts = 0; // Reset attempts on landing
+      lastRobotClickTime = 0; // Reset last click timestamp on landing
       if (isHotelDomain) {
         addLog(`Landed on hotel destination tracker: ${url}. Waiting 20 seconds for the "GET LINK" button to active...`, 'info');
       } else {
@@ -709,11 +753,11 @@ const handleShortenerPage = async (page: any) => {
         return;
       }
 
-      // Check overall 240s duration requirement since flowStartTime
+      // Check overall 230s duration requirement since flowStartTime
       const flowElapsed = flowStartTime ? (Date.now() - flowStartTime) : elapsedSinceLanded;
-      if (flowElapsed < 240000) {
-        const flowWaitLeft = Math.ceil((240000 - flowElapsed) / 1000);
-        addLog(`⏳ Flow total time elapsed: ${Math.floor(flowElapsed / 1000)}s / 240s minimum. Waiting ${flowWaitLeft}s more before clicking GET LINK to guarantee reward coins...`, 'info');
+      if (flowElapsed < 230000) {
+        const flowWaitLeft = Math.ceil((230000 - flowElapsed) / 1000);
+        addLog(`⏳ Flow total time elapsed: ${Math.floor(flowElapsed / 1000)}s / 230s minimum. Waiting ${flowWaitLeft}s more before clicking GET LINK to guarantee reward coins...`, 'info');
         return;
       }
 
@@ -755,9 +799,115 @@ const handleShortenerPage = async (page: any) => {
         break;
       }
 
-      await forceScrollDownToBottom(page);
+      const elapsedSinceLastRobotClick = Date.now() - lastRobotClickTime;
 
-      // 1. Detect any active countdown timers on the page (e.g., "wait 10 seconds", "timer: 5", etc.)
+      // FIRST: Check for your specific rank1st.in elements by ID and Class to guarantee 100% precision
+      // Check 1: Robot unlock button presence (can be clicked up to 3 times)
+      const hasSpecificRobot = await page.evaluate(() => {
+        const el = document.querySelector('#tp-unlock-btn, .tp-unlock-btn');
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity || '1') !== 0;
+      }).catch(() => false);
+
+      if (hasSpecificRobot && robotClickAttempts < 3 && elapsedSinceLastRobotClick > 8000) {
+        addLog(`🎯 [rank1st.in] DIRECT SELECTOR MATCH: "I'M Not Robot" (#tp-unlock-btn) button is visible!`, 'info');
+        const robotClicked = await trustedClickElement(page, '#tp-unlock-btn', "I'M Not Robot Button");
+        if (robotClicked) {
+          robotClickAttempts++;
+          lastRobotClickTime = Date.now();
+          addLog(`👉 Clicked "I'M Not Robot" (Attempt ${robotClickAttempts}/3). Pausing 5s for page verification...`, 'info');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        } else {
+          addLog(`⚠️ Attempted direct click on #tp-unlock-btn but click was pending.`, 'info');
+        }
+      }
+
+      // Check 2: Specific "Verify" button (ID tp-verify)
+      const hasSpecificVerify = await page.evaluate(() => {
+        const el = document.querySelector('#tp-verify') as HTMLElement;
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity || '1') !== 0;
+        if (!isVisible) return false;
+
+        // If the button is already clicked and shows "VERIFYING...", "PLEASE WAIT...", etc. do not target it.
+        const text = (el.textContent || el.innerText || '').trim().toLowerCase();
+        if (text.includes('verifying') || text.includes('wait') || text.includes('checking')) {
+          return false;
+        }
+        return true;
+      }).catch(() => false);
+
+      if (hasSpecificVerify) {
+        addLog(`🎯 [rank1st.in] DIRECT SELECTOR MATCH: "Verify" (#tp-verify) button is visible! clicking...`, 'info');
+        const clicked = await trustedClickElement(page, '#tp-verify', "Verify Button");
+        if (clicked) {
+          addLog(`⏱️ Successfully clicked Verify button. Pausing 5s for server timer...`, 'info');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          continue;
+        }
+      }
+
+      // Check 3: Specific "Continue" button (ID tp-snp2)
+      const hasSpecificContinue = await page.evaluate(() => {
+        const el = document.querySelector('#tp-snp2');
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity || '1') !== 0;
+      }).catch(() => false);
+
+      if (hasSpecificContinue) {
+        addLog(`🎯 [rank1st.in] DIRECT SELECTOR MATCH: "Continue" (#tp-snp2) button is visible! clicking...`, 'info');
+        const clicked = await trustedClickElement(page, '#tp-snp2', "Continue Button");
+        if (clicked) {
+          addLog(`🚀 Successfully clicked Continue button. Pausing 4s...`, 'info');
+          await new Promise(resolve => setTimeout(resolve, 4000));
+          break;
+        }
+      }
+
+      // Check if "I'm Not Robot" option / text exists on the page (Fallback)
+      const robotMatches = ['not robot', 'im not robot', 'not a robot', 'im not a robot', 'am not robot', 'robot'];
+      const hasRobotOption = await page.evaluate((matches: string[]) => {
+        const bodyText = (document.body.innerText || '').toLowerCase();
+        // Check if body text contains any of the robot check text matches
+        const hasText = matches.some(m => bodyText.includes(m));
+        if (hasText) return true;
+        
+        // Also check if any input or label elements have robot-related terms
+        const els = Array.from(document.querySelectorAll('input, label, button, a, span, div'));
+        return els.some(el => {
+          const text = (el.textContent || '').toLowerCase();
+          const value = ((el as any).value || '').toLowerCase();
+          const id = (el.id || '').toLowerCase();
+          const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+          return matches.some(m => text.includes(m) || value.includes(m) || id.includes(m) || cls.includes(m));
+        });
+      }, robotMatches).catch(() => false);
+
+      // 1. Prioritize clicking "I'm Not Robot" FIRST before scrolling completely to the bottom.
+      if (hasRobotOption && robotClickAttempts < 3 && elapsedSinceLastRobotClick > 8000) {
+        addLog(`🤖 "I'm Not Robot" candidate element detected on page. Targeting directly first...`, 'info');
+        const robotClicked = await findAndTrustedClick(page, robotMatches, "I'm Not Robot");
+        if (robotClicked) {
+          robotClickAttempts++;
+          lastRobotClickTime = Date.now();
+          addLog(`👉 Realistic mouse clicked "I'm Not Robot" (Attempt ${robotClickAttempts}/3). waiting 4s for verification validation...`, 'info');
+          await new Promise(resolve => setTimeout(resolve, 4000));
+          continue;
+        } else {
+          addLog(`⚠️ Attempted to click "I'm Not Robot" but click registration was pending. Preparing to scroll to expose...`, 'info');
+        }
+      }
+
+      // 2. Only force scroll down once robot option check is completed or bypassed to trigger dynamic countdown/script timers
+      if (!hasRobotOption || robotClickAttempts >= 3 || elapsedSinceLastRobotClick <= 8000) {
+        await forceScrollDownToBottom(page);
+      }
+
+      // 3. Detect any active countdown timers on the page (e.g., "wait 10 seconds", "timer: 5", etc.)
       const timerState = await page.evaluate(() => {
         const bodyText = document.body.innerText || '';
         const timerRegex = /(?:wait|remaining|timer|seconds|seconds\s+left|sec)\s*[:\-\s]*\s*(\d+)/i;
@@ -784,12 +934,14 @@ const handleShortenerPage = async (page: any) => {
         continue;
       }
 
-      // 2. Check if the page is currently in an active verifying state
+      // 4. Check if the page is currently in an active verifying state
       const isCurrentlyVerifying = await page.evaluate(() => {
         const els = Array.from(document.querySelectorAll('button, a, div, span, input[type="button"]'));
         return els.some(el => {
           const text = (el.textContent || '').trim().toLowerCase();
-          return text.includes('verifying') || text === 'please wait...';
+          // To prevent static labels styled like buttons from blocking the entire flow forever,
+          // only block if it matches literal short pending phrases exactly.
+          return (text === 'verifying...' || text === 'please wait...' || text === 'checking...') && text.length < 20;
         });
       }).catch(() => false);
 
@@ -799,19 +951,7 @@ const handleShortenerPage = async (page: any) => {
         continue;
       }
 
-      // 3. Click "I'm Not Robot" if present
-      if (robotClickAttempts < 3) {
-        const robotMatches = ['not robot', 'im not robot', 'not a robot', 'im not a robot', 'am not robot', 'robot'];
-        const robotClicked = await findAndTrustedClick(page, robotMatches, "I'm Not Robot");
-        if (robotClicked) {
-          robotClickAttempts++;
-          addLog(`👉 Realistic mouse clicked "I'm Not Robot" (Attempt ${robotClickAttempts}/3). waiting 3s...`, 'info');
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          continue;
-        }
-      }
-
-      // 4. Click VERIFY button
+      // 5. Click VERIFY button
       const verifyMatches = ['verify', 'click to verify', 'verify button', 'verify now', 'double click', 'double click to verify'];
       const verifyClicked = await findAndTrustedClick(page, verifyMatches, "VERIFY");
       if (verifyClicked) {
@@ -821,7 +961,7 @@ const handleShortenerPage = async (page: any) => {
         continue;
       }
 
-      // 5. Click CONTINUE button
+      // 6. Click CONTINUE button
       const continueMatches = ['continue', 'click here to continue', 'continue button'];
       const continueClicked = await findAndTrustedClick(page, continueMatches, "CONTINUE");
       if (continueClicked) {
@@ -947,7 +1087,7 @@ const handleOpenLinkPaysButton = async (page: any) => {
       lastAction = 'Fired click event on "Open LinkPays" button.';
       addLog(lastAction, 'info');
       flowStartTime = Date.now(); // Record flow start time here
-      addLog(`⏰ Flow started! Initiating 240+ seconds sequence timer tracker on backend...`, 'info');
+      addLog(`⏰ Flow started! Initiating 230+ seconds sequence timer tracker on backend...`, 'info');
       await triggerScreenshot();
       broadcast({ type: 'telemetry', data: getTelemetry() });
     } else {
@@ -1275,7 +1415,7 @@ const resolveAndSetChromePath = async () => {
 
 // Start automation engine
 const startBot = async (targetUrl: string, botConfig: typeof config) => {
-  stopBot('Restarting automation engine...');
+  await stopBot('Restarting automation engine...');
   currentStatus = 'STARTING';
   currentUrl = targetUrl;
   config = botConfig;
@@ -1284,6 +1424,9 @@ const startBot = async (targetUrl: string, botConfig: typeof config) => {
   actionCount = 0;
   reloadCount = 0;
   simulatedMode = false;
+
+  // Save state so the bot can auto-restart if container restarts/boots up
+  savePersistedState(targetUrl, botConfig, true);
 
   addLog(`Spinning up AFK Bot session for: ${targetUrl}`, 'info');
   broadcast({ type: 'telemetry', data: getTelemetry() });
@@ -1745,6 +1888,54 @@ async function initServer() {
     res.json(getTelemetry());
   });
 
+  // API route for downloading the full repository source code as a ZIP
+  app.get('/api/download-zip', (req, res) => {
+    try {
+      const zip = new AdmZip();
+      
+      const filesToExclude = [
+        'node_modules',
+        'dist',
+        '.git',
+        '.env', // hide raw credentials from public ZIPs
+        'afk-bot-persist.json',
+        'server.js',
+        'package-lock.json'
+      ];
+
+      const workspaceDir = process.cwd();
+
+      // Read workspace files
+      const items = fs.readdirSync(workspaceDir);
+      for (const item of items) {
+        if (filesToExclude.includes(item)) {
+          continue;
+        }
+
+        const fullPath = path.join(workspaceDir, item);
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+          zip.addLocalFolder(fullPath, item);
+        } else if (stat.isFile()) {
+          zip.addLocalFile(fullPath);
+        }
+      }
+
+      const zipName = 'afk-bot-source.zip';
+      const zipBuffer = zip.toBuffer();
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename=${zipName}`);
+      res.send(zipBuffer);
+      
+      addLog('📦 API triggered: Repository sources packed and sent as download successfully!', 'info');
+    } catch (err: any) {
+      console.error('Error generating archive:', err);
+      res.status(500).send(`Failed to generate ZIP: ${err.message}`);
+    }
+  });
+
   // Hot module replace check and Vite middleware hook
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1763,6 +1954,23 @@ async function initServer() {
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server is running at http://localhost:${PORT}`);
+    
+    // Automatically auto-start the last bot configuration if it was active when the system recycled
+    try {
+      const persisted = loadPersistedState();
+      if (persisted && persisted.started && persisted.url) {
+        addLog(`⏰ [PERSISTENCE] System resurrected: Automatically restarting persistent AFK background bot session...`, 'info');
+        setTimeout(() => {
+          startBot(persisted.url, persisted.config).catch((err) => {
+            console.error('[PERSISTENCE] Error starting bot during system restoration boot:', err);
+          });
+        }, 2000);
+      } else {
+        addLog('✅ AFK Bot Engine is initialized and ready. Click "Ignite Bot" to begin.', 'info');
+      }
+    } catch (err: any) {
+      console.error('[PERSISTENCE] Exception in auto-starting background bot:', err.message);
+    }
   });
 }
 
